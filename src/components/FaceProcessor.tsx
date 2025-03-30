@@ -7,20 +7,6 @@ const isMobile = (): boolean => {
   return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
 };
 
-// Detect if it's a low-performance device (simplified check, can be refined)
-const isLowPerformanceDevice = (): boolean => {
-  // Check for mobile device first
-  if (isMobile()) {
-    // If we can detect Core count, use that
-    if (navigator.hardwareConcurrency) {
-      return navigator.hardwareConcurrency <= 4;
-    }
-    // Otherwise assume mobile devices are lower performance
-    return true;
-  }
-  return false;
-};
-
 interface FaceProcessorProps {
   videoElement: HTMLVideoElement | null;
   onCanvasReady: (canvasElement: HTMLCanvasElement) => void; // Callback for screenshot
@@ -64,7 +50,7 @@ const FaceProcessor: React.FC<FaceProcessorProps> = ({ videoElement, onCanvasRea
   const deviceIsMobile = useRef(isMobile());
   const frameCount = useRef(0);
   const framesToSkip = useRef(deviceIsMobile.current ? 2 : 0);
-  const loadingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const loadingTimeoutRef = useRef<number | null>(null);
   const initAttemptRef = useRef(0);
   const MAX_ATTEMPTS = 2;
 
@@ -80,7 +66,7 @@ const FaceProcessor: React.FC<FaceProcessorProps> = ({ videoElement, onCanvasRea
     setIsLoading(true);
     
     // Set a timeout to use fallback if face detection takes too long
-    loadingTimeoutRef.current = setTimeout(() => {
+    loadingTimeoutRef.current = window.setTimeout(() => {
       if (mounted && isLoading) {
         console.log("Face detection loading timeout - switching to fallback");
         setUsingFallback(true);
