@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useAppStore } from '../store/useAppStore';
 import { Shade, predefinedShades } from '../data/shades';
 
@@ -22,15 +22,42 @@ function rgbToHex(r: number, g: number, b: number): string {
   );
 }
 
+// Detect if device is mobile
+const isMobile = (): boolean => {
+  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+};
+
 interface CustomShadeCreatorProps {
     onClose: () => void; // Function to close/hide the creator
 }
 
 const CustomShadeCreator: React.FC<CustomShadeCreatorProps> = ({ onClose }) => {
   const addCustomShade = useAppStore((state) => state.addCustomShade);
+  const setSelectedShade = useAppStore((state) => state.setSelectedShade);
   const [selectedForBlend, setSelectedForBlend] = useState<Shade[]>([]);
   const [customName, setCustomName] = useState('');
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const maxBlendShades = 4;
+  const deviceIsMobile = React.useRef(isMobile());
+
+  // Group shades by category for better organization
+  const shadesByCategory = useMemo(() => {
+    const categories: Record<string, typeof predefinedShades> = {};
+    
+    predefinedShades.forEach(shade => {
+      if (!categories[shade.category]) {
+        categories[shade.category] = [];
+      }
+      categories[shade.category].push(shade);
+    });
+    
+    return categories;
+  }, []);
+
+  useEffect(() => {
+    // Reset error when selection changes
+    setErrorMessage(null);
+  }, [selectedForBlend, customName]);
 
   const handleSelectBlendShade = (shade: Shade) => {
     setSelectedForBlend((prev) => {
@@ -40,6 +67,12 @@ const CustomShadeCreator: React.FC<CustomShadeCreatorProps> = ({ onClose }) => {
       } else if (prev.length < maxBlendShades) {
         // Select if not max count
         return [...prev, shade];
+      }
+      // Show error message if trying to select more than max
+      if (prev.length >= maxBlendShades) {
+        setErrorMessage(`You can select up to ${maxBlendShades} shades only.`);
+        // Hide error after 3 seconds
+        setTimeout(() => setErrorMessage(null), 3000);
       }
       return prev; // Otherwise, do nothing (max reached)
     });
@@ -71,26 +104,50 @@ const CustomShadeCreator: React.FC<CustomShadeCreatorProps> = ({ onClose }) => {
   }, [selectedForBlend]);
 
   const handleCreateAndAdd = () => {
-    if (selectedForBlend.length > 0 && customName.trim()) {
+    if (selectedForBlend.length === 0) {
+      setErrorMessage("Please select at least one shade to blend.");
+      setTimeout(() => setErrorMessage(null), 3000);
+      return;
+    }
+    
+    if (!customName.trim()) {
+      setErrorMessage("Please provide a name for your custom shade.");
+      setTimeout(() => setErrorMessage(null), 3000);
+      return;
+    }
+    
+    try {
+      // Validate that color was properly computed
+      if (blendedColorHex === '#FFFFFF' && !selectedForBlend.some(s => s.colorHex === '#FFFFFF')) {
+        setErrorMessage("Error computing blend color. Please try again.");
+        return;
+      }
+      
       const newShade: Shade = {
         id: `custom-${Date.now()}-${Math.random().toString(16).slice(2)}`, // More unique ID
         name: customName.trim(),
         category: 'Custom',
         colorHex: blendedColorHex,
       };
+      
+      // Add to store and select it immediately
       addCustomShade(newShade);
+      setSelectedShade(newShade); // Auto-select the new shade
+      
       // Reset state after adding
       setSelectedForBlend([]);
       setCustomName('');
       onClose(); // Close the modal/creator view
-    } else {
-      // Modern error handling - we'll rely on disabled button instead of alert
-      console.error("Missing required fields for custom shade");
+    } catch (error) {
+      console.error("Error creating custom shade:", error);
+      setErrorMessage("Unexpected error creating shade. Please try again.");
     }
   };
 
   return (
-    <div className="p-6 bg-gray-800/90 backdrop-blur-xl rounded-xl border border-gray-700/50 shadow-2xl max-w-md w-full text-gray-100 overflow-hidden">
+    <div className={`p-6 bg-gray-800/90 backdrop-blur-xl rounded-xl border border-gray-700/50 shadow-2xl
+                     ${deviceIsMobile.current ? 'max-w-full w-[95%]' : 'max-w-md w-full'} 
+                     text-gray-100 overflow-hidden`}>
       {/* Header with decorative background */}
       <div className="relative -m-6 mb-6 p-6 pb-8 bg-gradient-to-r from-purple-600 to-pink-500">
         <div className="absolute -bottom-5 left-0 right-0 h-10 bg-gradient-to-r from-purple-600 to-pink-500 clip-path-wave opacity-80"></div>
@@ -105,6 +162,13 @@ const CustomShadeCreator: React.FC<CustomShadeCreatorProps> = ({ onClose }) => {
         </p>
       </div>
 
+      {/* Error message */}
+      {errorMessage && (
+        <div className="mb-4 p-3 bg-red-500/20 border border-red-500/30 rounded-lg text-red-300 text-sm">
+          <p>{errorMessage}</p>
+        </div>
+      )}
+
       {/* Content */}
       <div className="space-y-5">
         <div>
@@ -112,21 +176,30 @@ const CustomShadeCreator: React.FC<CustomShadeCreatorProps> = ({ onClose }) => {
             <span className="w-5 h-5 rounded-full bg-purple-500 flex items-center justify-center text-xs mr-2">1</span>
             Select shades to blend:
           </p>
-          <div className="grid grid-cols-6 gap-3 mb-4">
-            {predefinedShades.map((shade) => (
-              <div
-                key={shade.id}
-                onClick={() => handleSelectBlendShade(shade)}
-                className={`w-10 h-10 rounded-full cursor-pointer transform transition-all duration-200 shadow-md
-                          ${selectedForBlend.find(s => s.id === shade.id) 
-                            ? 'ring-2 ring-offset-2 ring-purple-400 scale-110 z-10' 
-                            : 'hover:scale-105 opacity-80 hover:opacity-100'}`}
-                style={{ 
-                  backgroundColor: shade.colorHex,
-                  boxShadow: `0 4px 6px ${shade.colorHex}40` 
-                }}
-                title={shade.name}
-              />
+          
+          {/* Show shades by category for easier selection */}
+          <div className={`overflow-auto max-h-[180px] pr-2 ${deviceIsMobile.current ? 'pb-2' : 'pb-0'}`}>
+            {Object.entries(shadesByCategory).map(([category, shades]) => (
+              <div key={category} className="mb-3">
+                <h4 className="text-xs font-medium text-gray-400 mb-2">{category}</h4>
+                <div className="grid grid-cols-6 gap-2 mb-2">
+                  {shades.map((shade) => (
+                    <div
+                      key={shade.id}
+                      onClick={() => handleSelectBlendShade(shade)}
+                      className={`w-9 h-9 rounded-full cursor-pointer transform transition-all duration-200 shadow-md
+                                ${selectedForBlend.find(s => s.id === shade.id) 
+                                  ? 'ring-2 ring-offset-1 ring-purple-400 scale-110 z-10' 
+                                  : 'hover:scale-105 opacity-80 hover:opacity-100'}`}
+                      style={{ 
+                        backgroundColor: shade.colorHex,
+                        boxShadow: `0 4px 6px ${shade.colorHex}40` 
+                      }}
+                      title={shade.name}
+                    />
+                  ))}
+                </div>
+              </div>
             ))}
           </div>
         </div>
@@ -183,6 +256,7 @@ const CustomShadeCreator: React.FC<CustomShadeCreatorProps> = ({ onClose }) => {
             placeholder="e.g., My Perfect Match"
             className="w-full px-4 py-3 bg-gray-700/40 border border-gray-600/50 rounded-lg shadow-inner text-gray-100 
                       placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+            maxLength={30} // Prevent extremely long names
           />
         </div>
 

@@ -1,7 +1,26 @@
-import React, { useRef, useEffect, useCallback } from 'react';
+import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { FaceMesh, Results as FaceMeshResults } from '@mediapipe/face_mesh';
 import { useAppStore } from '../store/useAppStore';
 import { FACEMESH_TESSELATION } from './faceLandmarks'; // Assuming we create this file/constant
+
+// Detect if device is mobile
+const isMobile = (): boolean => {
+  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+};
+
+// Detect if it's a low-performance device (simplified check, can be refined)
+const isLowPerformanceDevice = (): boolean => {
+  // Check for mobile device first
+  if (isMobile()) {
+    // If we can detect Core count, use that
+    if (navigator.hardwareConcurrency) {
+      return navigator.hardwareConcurrency <= 4;
+    }
+    // Otherwise assume mobile devices are lower performance
+    return true;
+  }
+  return false;
+};
 
 interface FaceProcessorProps {
   videoElement: HTMLVideoElement | null;
@@ -22,6 +41,16 @@ const FaceProcessor: React.FC<FaceProcessorProps> = ({ videoElement, onCanvasRea
   const setFaceDetected = useAppStore((state) => state.setFaceDetected);
   const faceMeshRef = useRef<FaceMesh | null>(null);
   const animationFrameId = useRef<number | null>(null);
+  const processingRef = useRef<boolean>(false);
+  const [faceMeshError, setFaceMeshError] = useState<string | null>(null);
+  
+  // Performance settings based on device capability
+  const deviceIsMobile = useRef(isMobile());
+  const isLowPerformance = useRef(isLowPerformanceDevice());
+  
+  // Skip frame logic for performance
+  const frameCount = useRef(0);
+  const framesToSkip = useRef(deviceIsMobile.current ? (isLowPerformance.current ? 3 : 2) : 0);
 
   useEffect(() => {
     if (canvasRef.current) {
@@ -31,27 +60,64 @@ const FaceProcessor: React.FC<FaceProcessorProps> = ({ videoElement, onCanvasRea
 
   // --- MediaPipe Setup ---
   useEffect(() => {
-    const faceMesh = new FaceMesh({
-      locateFile: (file) => {
-        // Use CDN for model files
-        return `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`;
+    let mounted = true;
+    setFaceMeshError(null);
+    
+    const setupFaceMesh = async () => {
+      try {
+        // Try loading with timeout for error handling
+        const loadTimeoutId = setTimeout(() => {
+          if (mounted) {
+            setFaceMeshError("Face detection is taking too long to load. Please check your connection or try again later.");
+          }
+        }, 15000); // 15s timeout
+        
+        const faceMesh = new FaceMesh({
+          locateFile: (file) => {
+            // Use CDN for model files
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`;
+          }
+        });
+        
+        // Clear timeout once created
+        clearTimeout(loadTimeoutId);
+    
+        // Adjust confidence thresholds for mobile
+        faceMesh.setOptions({
+          maxNumFaces: 1,
+          refineLandmarks: !deviceIsMobile.current, // Only use detailed landmarks on desktop
+          minDetectionConfidence: deviceIsMobile.current ? 0.6 : 0.5, // Higher on mobile to avoid false positives
+          minTrackingConfidence: deviceIsMobile.current ? 0.6 : 0.5
+        });
+    
+        // Use wrap to prevent potential reference issues
+        const wrappedOnResults = (results: FaceMeshResults) => {
+          if (mounted) {
+            onResults(results);
+          }
+        };
+        
+        faceMesh.onResults(wrappedOnResults);
+        
+        if (mounted) {
+          faceMeshRef.current = faceMesh;
+        }
+      } catch (error) {
+        console.error("Error initializing FaceMesh:", error);
+        if (mounted) {
+          setFaceMeshError("Failed to initialize face detection. Please refresh the page or try a different browser.");
+        }
       }
-    });
-
-    faceMesh.setOptions({
-      maxNumFaces: 1,
-      refineLandmarks: true, // Provides more detailed landmarks (iris, lips)
-      minDetectionConfidence: 0.5,
-      minTrackingConfidence: 0.5
-    });
-
-    faceMesh.onResults(onResults);
-    faceMeshRef.current = faceMesh;
+    };
+    
+    setupFaceMesh();
 
     // Cleanup function
     return () => {
+        mounted = false;
         if (animationFrameId.current) {
             cancelAnimationFrame(animationFrameId.current);
+            animationFrameId.current = null;
         }
         faceMeshRef.current?.close();
         setFaceDetected(false); // Reset face detection state on unmount
@@ -72,10 +138,16 @@ const FaceProcessor: React.FC<FaceProcessorProps> = ({ videoElement, onCanvasRea
     }
 
     // Match canvas dimensions to video
-    canvasRef.current.width = videoElement.videoWidth;
-    canvasRef.current.height = videoElement.videoHeight;
+    const videoWidth = videoElement.videoWidth;
+    const videoHeight = videoElement.videoHeight;
+    
+    // Only update dimensions if they've changed
+    if (canvasRef.current.width !== videoWidth || canvasRef.current.height !== videoHeight) {
+      canvasRef.current.width = videoWidth;
+      canvasRef.current.height = videoHeight;
+    }
 
-    // Clear canvas and draw video frame
+    // Clear canvas
     canvasCtx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
     
     // Apply the same mirroring as the video element
@@ -98,56 +170,63 @@ const FaceProcessor: React.FC<FaceProcessorProps> = ({ videoElement, onCanvasRea
             canvasCtx.scale(-1, 1);
             canvasCtx.translate(-canvasRef.current.width, 0);
 
-            // Iterate through the tesselation indices to draw triangles covering the face
-            // FACEMESH_TESSELATION defines pairs of landmark indices forming lines of the mesh
-            // We adapt this to draw filled triangles. Need to be careful with triangle winding order.
-            // Simplified approach: Draw polygons for key areas (cheeks, forehead) later if tesselation is too complex.
-            
-            // Let's use a simplified approach: Draw the full face mesh tesselation as a starting point
-            // Note: This covers the *entire* face mesh area, not just typical foundation zones.
-            // You might want to refine this to specific zones later.
-            canvasCtx.beginPath();
-            for (const connection of FACEMESH_TESSELATION) {
-                const startIdx = connection[0];
-                const endIdx = connection[1];
-
-                if (landmarks[startIdx] && landmarks[endIdx]) {
-                   // This draws lines, not filled polygons. We need triangles.
-                   // Let's draw the convex hull as a simpler approximation for now
-                   // For actual makeup, drawing specific triangles based on FACEMESH_TESSELATION is better.
-                }
-            }
-            // --- Convex Hull Approximation --- (Simpler than full triangulation)
-            // This is a placeholder. For real foundation, use triangulation.
-            const hullPoints = [ // Example indices for a rough face outline - ADJUST AS NEEDED
-                10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 
-                397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 
-                172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109
-            ];
-            
-            if (landmarks.length > hullPoints[hullPoints.length - 1]) { // Check if landmarks are available
+            // Draw simpler approximation on mobile for performance
+            if (deviceIsMobile.current) {
+              // Simplified face region - just draw key areas
+              const cheekPoints = [
+                // Left cheek (key points only)
+                [92, 165, 167, 393, 391, 371, 266, 264],
+                // Right cheek (key points only)
+                [322, 323, 361, 401, 435, 367, 364, 346]
+              ];
+              
+              // Draw cheeks separately
+              for (const region of cheekPoints) {
                 canvasCtx.beginPath();
-                const firstPoint = landmarks[hullPoints[0]];
-                canvasCtx.moveTo(firstPoint.x * canvasRef.current.width, firstPoint.y * canvasRef.current.height);
-
-                for (let i = 1; i < hullPoints.length; i++) {
-                    const point = landmarks[hullPoints[i]];
-                    canvasCtx.lineTo(point.x * canvasRef.current.width, point.y * canvasRef.current.height);
+                if (landmarks[region[0]]) {
+                  canvasCtx.moveTo(
+                    landmarks[region[0]].x * canvasRef.current.width,
+                    landmarks[region[0]].y * canvasRef.current.height
+                  );
+                  
+                  for (let i = 1; i < region.length; i++) {
+                    canvasCtx.lineTo(
+                      landmarks[region[i]].x * canvasRef.current.width,
+                      landmarks[region[i]].y * canvasRef.current.height
+                    );
+                  }
+                  canvasCtx.closePath();
+                  canvasCtx.fill();
                 }
-                canvasCtx.closePath();
-                canvasCtx.fill();
+              }
+            } else {
+              // Desktop - more detailed approach
+              // --- Convex Hull Approximation ---
+              const hullPoints = [ // Example indices for a rough face outline
+                  10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 
+                  397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 
+                  172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109
+              ];
+              
+              if (landmarks.length > hullPoints[hullPoints.length - 1]) {
+                  canvasCtx.beginPath();
+                  const firstPoint = landmarks[hullPoints[0]];
+                  canvasCtx.moveTo(firstPoint.x * canvasRef.current.width, firstPoint.y * canvasRef.current.height);
+
+                  for (let i = 1; i < hullPoints.length; i++) {
+                      const point = landmarks[hullPoints[i]];
+                      canvasCtx.lineTo(point.x * canvasRef.current.width, point.y * canvasRef.current.height);
+                  }
+                  canvasCtx.closePath();
+                  canvasCtx.fill();
+              }
             }
             
             // Restore canvas state
             canvasCtx.restore();
             
             canvasCtx.globalCompositeOperation = 'source-over'; // Reset composite operation
-        } else {
-            // Optionally: Draw landmarks if no shade is selected (for debugging)
-            // drawConnectors(canvasCtx, landmarks, FACEMESH_TESSELATION, {color: '#C0C0C070', lineWidth: 1});
-            // drawLandmarks(canvasCtx, landmarks, {color: '#FF0000', lineWidth: 2});
         }
-
     } else {
       setFaceDetected(false);
     }
@@ -156,11 +235,31 @@ const FaceProcessor: React.FC<FaceProcessorProps> = ({ videoElement, onCanvasRea
   // --- Animation Loop ---
   useEffect(() => {
     const processVideo = async () => {
-      if (videoElement && videoElement.readyState >= 3 && faceMeshRef.current) { // readyState 3 = HAVE_FUTURE_DATA
+      frameCount.current += 1;
+      
+      // Skip frames on low-performance devices
+      if (framesToSkip.current > 0 && frameCount.current % (framesToSkip.current + 1) !== 0) {
+        // Skip this frame
+        animationFrameId.current = requestAnimationFrame(processVideo);
+        return;
+      }
+      
+      // Only process if video is ready and faceMesh is available and not already processing
+      if (videoElement && videoElement.readyState >= 3 && faceMeshRef.current && !processingRef.current) {
         try {
+            processingRef.current = true;
             await faceMeshRef.current.send({ image: videoElement });
+            processingRef.current = false;
         } catch (error) {
+            processingRef.current = false;
             console.error("Error sending frame to FaceMesh:", error);
+            
+            // Limit attempts on serious errors
+            if (String(error).includes("Cannot read properties of undefined") || 
+                String(error).includes("Failed to load model")) {
+              setFaceMeshError("Face detection encountered a problem. Please reload the page.");
+              return; // Stop requesting frames
+            }
         }
       }
       // Request next frame
@@ -188,10 +287,21 @@ const FaceProcessor: React.FC<FaceProcessorProps> = ({ videoElement, onCanvasRea
   }, [videoElement]); // Rerun setup if videoElement changes
 
   return (
-    <canvas
-      ref={canvasRef}
-      className="absolute top-0 left-0 w-full h-full pointer-events-none" // Overlay canvas
-    />
+    <>
+      <canvas
+        ref={canvasRef}
+        className="absolute top-0 left-0 w-full h-full pointer-events-none" // Overlay canvas
+      />
+      
+      {/* Error message for FaceMesh failures */}
+      {faceMeshError && (
+        <div className="absolute top-0 left-0 right-0 bg-red-500 text-white py-2 px-4 text-center">
+          <p className="text-sm">
+            {faceMeshError}
+          </p>
+        </div>
+      )}
+    </>
   );
 };
 
