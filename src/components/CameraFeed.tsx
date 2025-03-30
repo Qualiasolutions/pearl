@@ -6,12 +6,6 @@ const isMobile = (): boolean => {
   return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
 };
 
-// Detect if device is iOS
-const isIOS = (): boolean => {
-  return /iPad|iPhone|iPod/.test(navigator.userAgent) || 
-    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-};
-
 interface CameraFeedProps {
   onVideoReady: (videoElement: HTMLVideoElement) => void;
 }
@@ -26,9 +20,8 @@ const CameraFeed: React.FC<CameraFeedProps> = ({ onVideoReady }) => {
   const userInteractedRef = useRef(false); // Track if user has interacted with the page
   const videoReadyRef = useRef(false); // Track if video is actually playing
 
-  // Detect mobile and iOS once
+  // Detect mobile once
   const deviceIsMobile = useRef(isMobile());
-  const deviceIsIOS = useRef(isIOS());
 
   // Camera initialization function - declared here so it can be referenced in other useEffects
   const enableCamera = async () => {
