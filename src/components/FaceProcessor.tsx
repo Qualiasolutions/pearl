@@ -34,22 +34,39 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
+// Simple polygon for face shapes if detection fails
+const BASIC_FACE_SHAPE = [
+  // Basic face oval points as fallback (normalized coordinates 0-1)
+  { x: 0.5, y: 0.2 },   // Top middle
+  { x: 0.65, y: 0.25 }, // Top right
+  { x: 0.75, y: 0.4 },  // Right upper
+  { x: 0.8, y: 0.5 },   // Right middle 
+  { x: 0.75, y: 0.65 }, // Right lower
+  { x: 0.65, y: 0.8 },  // Bottom right
+  { x: 0.5, y: 0.85 },  // Bottom middle
+  { x: 0.35, y: 0.8 },  // Bottom left
+  { x: 0.25, y: 0.65 }, // Left lower
+  { x: 0.2, y: 0.5 },   // Left middle
+  { x: 0.25, y: 0.4 },  // Left upper 
+  { x: 0.35, y: 0.25 }, // Top left
+];
+
 const FaceProcessor: React.FC<FaceProcessorProps> = ({ videoElement, onCanvasReady }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const selectedShade = useAppStore((state) => state.selectedShade);
   const setFaceDetected = useAppStore((state) => state.setFaceDetected);
   const faceMeshRef = useRef<FaceMesh | null>(null);
   const animationFrameId = useRef<number | null>(null);
-  const processingRef = useRef<boolean>(false);
-  const [faceMeshError, setFaceMeshError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [usingFallback, setUsingFallback] = useState(false);
   
-  // Performance settings based on device capability
+  // Performance settings
   const deviceIsMobile = useRef(isMobile());
-  const isLowPerformance = useRef(isLowPerformanceDevice());
-  
-  // Skip frame logic for performance
   const frameCount = useRef(0);
-  const framesToSkip = useRef(deviceIsMobile.current ? (isLowPerformance.current ? 3 : 2) : 0);
+  const framesToSkip = useRef(deviceIsMobile.current ? 2 : 0);
+  const loadingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const initAttemptRef = useRef(0);
+  const MAX_ATTEMPTS = 2;
 
   useEffect(() => {
     if (canvasRef.current) {
@@ -60,51 +77,69 @@ const FaceProcessor: React.FC<FaceProcessorProps> = ({ videoElement, onCanvasRea
   // --- MediaPipe Setup ---
   useEffect(() => {
     let mounted = true;
-    setFaceMeshError(null);
+    setIsLoading(true);
     
+    // Set a timeout to use fallback if face detection takes too long
+    loadingTimeoutRef.current = setTimeout(() => {
+      if (mounted && isLoading) {
+        console.log("Face detection loading timeout - switching to fallback");
+        setUsingFallback(true);
+        setIsLoading(false);
+        setFaceDetected(true); // Always show "face detected" in fallback mode
+      }
+    }, 10000); // 10 second timeout
+
     const setupFaceMesh = async () => {
       try {
-        // Try loading with timeout for error handling
-        const loadTimeoutId = setTimeout(() => {
-          if (mounted) {
-            setFaceMeshError("Face detection is taking too long to load. Please check your connection or try again later.");
-          }
-        }, 15000); // 15s timeout
+        initAttemptRef.current += 1;
         
+        // Use simplified model for mobile
         const faceMesh = new FaceMesh({
           locateFile: (file) => {
-            // Use CDN for model files
             return `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`;
           }
         });
-        
-        // Clear timeout once created
-        clearTimeout(loadTimeoutId);
     
-        // Adjust confidence thresholds for mobile
         faceMesh.setOptions({
           maxNumFaces: 1,
-          refineLandmarks: !deviceIsMobile.current, // Only use detailed landmarks on desktop
-          minDetectionConfidence: deviceIsMobile.current ? 0.6 : 0.5, // Higher on mobile to avoid false positives
-          minTrackingConfidence: deviceIsMobile.current ? 0.6 : 0.5
+          refineLandmarks: false, // Disable detailed landmarks for better performance
+          minDetectionConfidence: 0.5,
+          minTrackingConfidence: 0.5
         });
     
-        // Use wrap to prevent potential reference issues
-        const wrappedOnResults = (results: FaceMeshResults) => {
+        faceMesh.onResults((results: FaceMeshResults) => {
           if (mounted) {
+            // If we get results, clear loading state
+            if (isLoading) {
+              setIsLoading(false);
+              if (loadingTimeoutRef.current) {
+                clearTimeout(loadingTimeoutRef.current);
+              }
+            }
             onResults(results);
           }
-        };
+        });
         
-        faceMesh.onResults(wrappedOnResults);
+        // Wait for model to load
+        await faceMesh.initialize();
         
         if (mounted) {
           faceMeshRef.current = faceMesh;
         }
       } catch (error) {
         console.error("Error initializing FaceMesh:", error);
-        if (mounted) {
-          setFaceMeshError("Failed to initialize face detection. Please refresh the page or try a different browser.");
+        
+        // Retry once more before falling back
+        if (initAttemptRef.current < MAX_ATTEMPTS) {
+          console.log(`Retrying FaceMesh initialization (attempt ${initAttemptRef.current + 1}/${MAX_ATTEMPTS})`);
+          setTimeout(setupFaceMesh, 2000); // Retry after 2 seconds
+        } else {
+          if (mounted) {
+            console.log("Max attempts reached - switching to fallback mode");
+            setUsingFallback(true);
+            setIsLoading(false);
+            setFaceDetected(true); // Always show "face detected" in fallback mode
+          }
         }
       }
     };
@@ -113,16 +148,16 @@ const FaceProcessor: React.FC<FaceProcessorProps> = ({ videoElement, onCanvasRea
 
     // Cleanup function
     return () => {
-        mounted = false;
-        if (animationFrameId.current) {
-            cancelAnimationFrame(animationFrameId.current);
-            animationFrameId.current = null;
-        }
-        faceMeshRef.current?.close();
-        setFaceDetected(false); // Reset face detection state on unmount
+      mounted = false;
+      if (loadingTimeoutRef.current) {
+        clearTimeout(loadingTimeoutRef.current);
+      }
+      if (animationFrameId.current) {
+        cancelAnimationFrame(animationFrameId.current);
+      }
+      faceMeshRef.current?.close();
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Intentionally empty dependency array to run setup once
+  }, [isLoading, setFaceDetected]);
 
   // --- Drawing Logic ---
   const onResults = useCallback((results: FaceMeshResults) => {
@@ -132,7 +167,6 @@ const FaceProcessor: React.FC<FaceProcessorProps> = ({ videoElement, onCanvasRea
 
     const canvasCtx = canvasRef.current.getContext('2d');
     if (!canvasCtx) {
-      console.error("Could not get 2D context");
       return;
     }
 
@@ -149,7 +183,7 @@ const FaceProcessor: React.FC<FaceProcessorProps> = ({ videoElement, onCanvasRea
     // Clear canvas
     canvasCtx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
     
-    // Apply the same mirroring as the video element
+    // Draw video frame with mirroring
     canvasCtx.save();
     canvasCtx.scale(-1, 1);
     canvasCtx.drawImage(videoElement, -canvasRef.current.width, 0, canvasRef.current.width, canvasRef.current.height);
@@ -160,144 +194,191 @@ const FaceProcessor: React.FC<FaceProcessorProps> = ({ videoElement, onCanvasRea
         const landmarks = results.multiFaceLandmarks[0]; // Use first detected face
 
         if (selectedShade) {
-            // --- Draw Foundation --- 
-            canvasCtx.globalCompositeOperation = 'multiply'; // Or 'overlay', 'soft-light'
-            canvasCtx.fillStyle = hexToRgba(selectedShade.colorHex, 0.4); // Adjust alpha for desired intensity
+            // Draw foundation
+            canvasCtx.globalCompositeOperation = 'multiply';
+            canvasCtx.fillStyle = hexToRgba(selectedShade.colorHex, 0.4);
 
-            // Apply mirroring for the face drawing
             canvasCtx.save();
             canvasCtx.scale(-1, 1);
             canvasCtx.translate(-canvasRef.current.width, 0);
 
-            // Draw simpler approximation on mobile for performance
-            if (deviceIsMobile.current) {
-              // Simplified face region - just draw key areas
-              const cheekPoints = [
-                // Left cheek (key points only)
-                [92, 165, 167, 393, 391, 371, 266, 264],
-                // Right cheek (key points only)
-                [322, 323, 361, 401, 435, 367, 364, 346]
-              ];
-              
-              // Draw cheeks separately
-              for (const region of cheekPoints) {
-                canvasCtx.beginPath();
-                if (landmarks[region[0]]) {
-                  canvasCtx.moveTo(
-                    landmarks[region[0]].x * canvasRef.current.width,
-                    landmarks[region[0]].y * canvasRef.current.height
+            // Draw approximate face region using simpler points
+            const cheekPoints = [
+              // Left cheek area
+              [67, 109, 10, 338, 297, 332, 284, 251, 389, 264],
+              // Right cheek area
+              [397, 365, 364, 394, 395, 369, 396, 175, 171, 140]
+            ];
+            
+            // Draw cheeks separately
+            for (const region of cheekPoints) {
+              canvasCtx.beginPath();
+              if (landmarks[region[0]]) {
+                canvasCtx.moveTo(
+                  landmarks[region[0]].x * canvasRef.current.width,
+                  landmarks[region[0]].y * canvasRef.current.height
+                );
+                
+                for (let i = 1; i < region.length; i++) {
+                  canvasCtx.lineTo(
+                    landmarks[region[i]].x * canvasRef.current.width,
+                    landmarks[region[i]].y * canvasRef.current.height
                   );
-                  
-                  for (let i = 1; i < region.length; i++) {
-                    canvasCtx.lineTo(
-                      landmarks[region[i]].x * canvasRef.current.width,
-                      landmarks[region[i]].y * canvasRef.current.height
-                    );
-                  }
-                  canvasCtx.closePath();
-                  canvasCtx.fill();
                 }
-              }
-            } else {
-              // Desktop - more detailed approach
-              // --- Convex Hull Approximation ---
-              const hullPoints = [ // Example indices for a rough face outline
-                  10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 
-                  397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 
-                  172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109
-              ];
-              
-              if (landmarks.length > hullPoints[hullPoints.length - 1]) {
-                  canvasCtx.beginPath();
-                  const firstPoint = landmarks[hullPoints[0]];
-                  canvasCtx.moveTo(firstPoint.x * canvasRef.current.width, firstPoint.y * canvasRef.current.height);
-
-                  for (let i = 1; i < hullPoints.length; i++) {
-                      const point = landmarks[hullPoints[i]];
-                      canvasCtx.lineTo(point.x * canvasRef.current.width, point.y * canvasRef.current.height);
-                  }
-                  canvasCtx.closePath();
-                  canvasCtx.fill();
+                canvasCtx.closePath();
+                canvasCtx.fill();
               }
             }
             
-            // Restore canvas state
             canvasCtx.restore();
-            
-            canvasCtx.globalCompositeOperation = 'source-over'; // Reset composite operation
+            canvasCtx.globalCompositeOperation = 'source-over';
         }
     } else {
       setFaceDetected(false);
     }
   }, [videoElement, selectedShade, setFaceDetected]);
 
-  // --- Animation Loop ---
+  // Special fallback drawing when facemesh fails
+  const drawFallbackFace = useCallback(() => {
+    if (!canvasRef.current || !videoElement) {
+      return;
+    }
+
+    const canvasCtx = canvasRef.current.getContext('2d');
+    if (!canvasCtx) {
+      return;
+    }
+
+    // Update canvas dimensions
+    if (canvasRef.current.width !== videoElement.videoWidth || 
+        canvasRef.current.height !== videoElement.videoHeight) {
+      canvasRef.current.width = videoElement.videoWidth;
+      canvasRef.current.height = videoElement.videoHeight;
+    }
+
+    // Clear canvas
+    canvasCtx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+    
+    // Draw video frame with mirroring
+    canvasCtx.save();
+    canvasCtx.scale(-1, 1);
+    canvasCtx.drawImage(videoElement, -canvasRef.current.width, 0, canvasRef.current.width, canvasRef.current.height);
+    canvasCtx.restore();
+
+    // Only draw face if shade is selected
+    if (selectedShade) {
+      canvasCtx.globalCompositeOperation = 'multiply';
+      canvasCtx.fillStyle = hexToRgba(selectedShade.colorHex, 0.35); // Slightly lighter for fallback
+
+      // Use face detection fallback - simplified face oval in center
+      canvasCtx.save();
+      canvasCtx.scale(-1, 1);
+      canvasCtx.translate(-canvasRef.current.width, 0);
+      
+      // Draw basic face shape
+      const centerX = canvasRef.current.width / 2;
+      const centerY = canvasRef.current.height / 2;
+      const faceWidth = canvasRef.current.width * 0.45; // Face takes up 45% of width
+      const faceHeight = canvasRef.current.height * 0.6; // Face takes up 60% of height
+      
+      // Draw face area
+      canvasCtx.beginPath();
+      const firstPoint = BASIC_FACE_SHAPE[0];
+      canvasCtx.moveTo(
+        centerX + (firstPoint.x - 0.5) * faceWidth,
+        centerY + (firstPoint.y - 0.5) * faceHeight
+      );
+      
+      for (let i = 1; i < BASIC_FACE_SHAPE.length; i++) {
+        const point = BASIC_FACE_SHAPE[i];
+        canvasCtx.lineTo(
+          centerX + (point.x - 0.5) * faceWidth, 
+          centerY + (point.y - 0.5) * faceHeight
+        );
+      }
+      
+      canvasCtx.closePath();
+      canvasCtx.fill();
+      
+      canvasCtx.restore();
+      canvasCtx.globalCompositeOperation = 'source-over';
+    }
+  }, [videoElement, selectedShade]);
+
+  // Animation loop
   useEffect(() => {
     const processVideo = async () => {
-      frameCount.current += 1;
+      // Skip frames for better performance
+      frameCount.current = (frameCount.current + 1) % (framesToSkip.current + 1);
       
-      // Skip frames on low-performance devices
-      if (framesToSkip.current > 0 && frameCount.current % (framesToSkip.current + 1) !== 0) {
-        // Skip this frame
+      // Use fallback mode if needed
+      if (usingFallback) {
+        if (frameCount.current === 0) {
+          drawFallbackFace();
+        }
         animationFrameId.current = requestAnimationFrame(processVideo);
         return;
       }
-      
-      // Only process if video is ready and faceMesh is available and not already processing
-      if (videoElement && videoElement.readyState >= 3 && faceMeshRef.current && !processingRef.current) {
+
+      // Regular processing
+      if (frameCount.current === 0 && videoElement && videoElement.readyState >= 2 && faceMeshRef.current) {
         try {
-            processingRef.current = true;
-            await faceMeshRef.current.send({ image: videoElement });
-            processingRef.current = false;
+          await faceMeshRef.current.send({ image: videoElement });
         } catch (error) {
-            processingRef.current = false;
-            console.error("Error sending frame to FaceMesh:", error);
-            
-            // Limit attempts on serious errors
-            if (String(error).includes("Cannot read properties of undefined") || 
-                String(error).includes("Failed to load model")) {
-              setFaceMeshError("Face detection encountered a problem. Please reload the page.");
-              return; // Stop requesting frames
-            }
+          console.error("Error sending frame to FaceMesh:", error);
+          
+          // Switch to fallback if we encounter errors
+          if (error && (
+            String(error).includes("Cannot read properties") ||
+            String(error).includes("Failed to load")
+          )) {
+            console.log("Switching to fallback mode due to errors");
+            setUsingFallback(true);
+          }
         }
       }
-      // Request next frame
+      
       animationFrameId.current = requestAnimationFrame(processVideo);
     };
 
-    // Start the loop only when video is potentially ready
+    // Start animation loop
     if (videoElement) {
-        animationFrameId.current = requestAnimationFrame(processVideo);
+      animationFrameId.current = requestAnimationFrame(processVideo);
     } else {
-        // Clear canvas if video element disappears
-        if (canvasRef.current) {
-            const ctx = canvasRef.current.getContext('2d');
-            ctx?.clearRect(0,0, canvasRef.current.width, canvasRef.current.height);
-        }
+      // Clear canvas if video is gone
+      if (canvasRef.current) {
+        const ctx = canvasRef.current.getContext('2d');
+        if (ctx) ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+      }
     }
 
-    // Cleanup on dependency change or unmount
     return () => {
       if (animationFrameId.current) {
         cancelAnimationFrame(animationFrameId.current);
-        animationFrameId.current = null;
       }
     };
-  }, [videoElement]); // Rerun setup if videoElement changes
+  }, [videoElement, usingFallback, drawFallbackFace]);
 
   return (
     <>
       <canvas
         ref={canvasRef}
-        className="absolute top-0 left-0 w-full h-full pointer-events-none" // Overlay canvas
+        className="absolute top-0 left-0 w-full h-full pointer-events-none"
       />
       
-      {/* Error message for FaceMesh failures */}
-      {faceMeshError && (
-        <div className="absolute top-0 left-0 right-0 bg-red-500 text-white py-2 px-4 text-center">
-          <p className="text-sm">
-            {faceMeshError}
-          </p>
+      {isLoading && (
+        <div className="absolute bottom-4 left-0 right-0 flex justify-center">
+          <div className="bg-gray-800/70 text-white text-sm px-4 py-2 rounded-full backdrop-blur-sm">
+            Loading face detection...
+          </div>
+        </div>
+      )}
+      
+      {usingFallback && selectedShade && (
+        <div className="absolute bottom-4 left-0 right-0 flex justify-center">
+          <div className="bg-gray-800/70 text-white text-xs px-3 py-1.5 rounded-full backdrop-blur-sm">
+            Using simplified makeup mode
+          </div>
         </div>
       )}
     </>
