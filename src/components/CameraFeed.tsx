@@ -15,23 +15,31 @@ const CameraFeed: React.FC<CameraFeedProps> = ({ onVideoReady }) => {
 
   useEffect(() => {
     let mounted = true;
-    
+    console.log('CameraFeed: useEffect mounting/running.');
+
     // Camera initialization function
     const enableCamera = async () => {
+      console.log(`CameraFeed: enableCamera called (attempt: ${initAttemptRef.current})`);
       // Prevent multiple initialization attempts in quick succession
       if (initAttemptRef.current > 0) {
+        console.log('CameraFeed: enableCamera aborted, attempt already in progress.');
         return;
       }
       
       initAttemptRef.current += 1;
-      
+      setCameraStarting(true); // Ensure loading state is active
+      setError(null); // Clear previous errors
+
       try {
+        console.log('CameraFeed: Stopping existing stream (if any)...');
         // Stop any existing stream first
         if (streamRef.current) {
           streamRef.current.getTracks().forEach(track => track.stop());
           streamRef.current = null;
+          console.log('CameraFeed: Existing stream stopped.');
         }
 
+        console.log('CameraFeed: Requesting camera access...');
         // Request camera access with specific constraints
         const stream = await navigator.mediaDevices.getUserMedia({ 
           video: { 
@@ -43,27 +51,44 @@ const CameraFeed: React.FC<CameraFeedProps> = ({ onVideoReady }) => {
           audio: false
         });
         
+        console.log('CameraFeed: Camera access granted.');
         // Store stream reference for cleanup
         streamRef.current = stream;
         
         // Only proceed if component is still mounted
-        if (!mounted) return;
+        if (!mounted) {
+          console.log('CameraFeed: Component unmounted after getting stream.');
+          streamRef.current?.getTracks().forEach(track => track.stop()); 
+          return;
+        } 
         
         if (videoRef.current) {
+          console.log('CameraFeed: Assigning stream to video element.');
           videoRef.current.srcObject = stream;
           
           // Wait for metadata to load to ensure video dimensions are available
           videoRef.current.onloadedmetadata = () => {
-            if (!videoRef.current || !mounted) return;
-            
+            if (!videoRef.current || !mounted) {
+               console.log('CameraFeed: onloadedmetadata skipped (unmounted or no videoRef).');
+               return;
+            }
+            console.log('CameraFeed: Video metadata loaded. Attempting to play...');
             const playPromise = videoRef.current.play();
             if (playPromise !== undefined) {
               playPromise
                 .then(() => {
-                  if (!mounted) return;
+                  if (!mounted) {
+                    console.log('CameraFeed: play() resolved, but component unmounted.');
+                    return;
+                  }
+                  console.log('CameraFeed: play() resolved successfully.');
                   // Additional delay to ensure video is actually playing
                   setTimeout(() => {
-                    if (!mounted || !videoRef.current) return;
+                    if (!mounted || !videoRef.current) {
+                       console.log('CameraFeed: Post-play timeout skipped (unmounted or no videoRef).');
+                       return;
+                    }
+                    console.log('CameraFeed: Setting camera ready.');
                     setCameraReady(true);
                     onVideoReady(videoRef.current);
                     setCameraStarting(false);
@@ -71,11 +96,12 @@ const CameraFeed: React.FC<CameraFeedProps> = ({ onVideoReady }) => {
                     // Reset attempt counter after successful initialization
                     setTimeout(() => {
                       initAttemptRef.current = 0;
+                      console.log('CameraFeed: Init attempt counter reset.');
                     }, 1000);
                   }, 500);
                 })
                 .catch(err => {
-                  console.error("Error playing video:", err);
+                  console.error("CameraFeed: Error playing video:", err);
                   if (!mounted) return;
                   setError('Could not play video stream. Please reload and try again.');
                   setCameraStarting(false);
@@ -83,6 +109,7 @@ const CameraFeed: React.FC<CameraFeedProps> = ({ onVideoReady }) => {
                   // Reset attempt counter to allow retrying
                   setTimeout(() => {
                     initAttemptRef.current = 0;
+                    console.log('CameraFeed: Init attempt counter reset after play error.');
                   }, 1000);
                 });
             }
@@ -91,6 +118,7 @@ const CameraFeed: React.FC<CameraFeedProps> = ({ onVideoReady }) => {
           // Handle video errors
           videoRef.current.onerror = () => {
             if (!mounted) return;
+            console.error('CameraFeed: Video element error occurred.');
             setError('Video playback error. Please reload and try again.');
             setCameraStarting(false);
             setCameraReady(false);
@@ -98,12 +126,13 @@ const CameraFeed: React.FC<CameraFeedProps> = ({ onVideoReady }) => {
             // Reset attempt counter to allow retrying
             setTimeout(() => {
               initAttemptRef.current = 0;
+              console.log('CameraFeed: Init attempt counter reset after video.onerror.');
             }, 1000);
           };
         }
       } catch (err) {
         if (!mounted) return;
-        console.error("Error accessing camera:", err);
+        console.error("CameraFeed: Error during camera access/setup:", err);
         
         if (err instanceof DOMException && err.name === 'NotAllowedError') {
             setError('Camera access denied. Please allow camera access in your browser settings and reload the page.');
@@ -112,47 +141,56 @@ const CameraFeed: React.FC<CameraFeedProps> = ({ onVideoReady }) => {
         } else if (err instanceof DOMException && err.name === 'NotReadableError') {
             setError('Camera is in use by another application. Please close other applications using your camera.');
         } else if (err instanceof DOMException && err.name === 'OverconstrainedError') {
+            console.log('CameraFeed: OverconstrainedError, attempting fallback.');
             // Try again with less constraints
             try {
               const basicStream = await navigator.mediaDevices.getUserMedia({ video: true });
               if (!mounted) return;
+              console.log('CameraFeed: Fallback camera access granted.');
               streamRef.current = basicStream;
               if (videoRef.current) {
                 videoRef.current.srcObject = basicStream;
                 videoRef.current.onloadedmetadata = () => {
                   if (!videoRef.current || !mounted) return;
+                  console.log('CameraFeed: Fallback video metadata loaded. Attempting to play...');
                   videoRef.current.play()
                     .then(() => {
                       if (!mounted) return;
+                      console.log('CameraFeed: Fallback play() resolved successfully.');
                       setCameraReady(true);
-                      onVideoReady(videoRef.current!);
+                      onVideoReady(videoRef.current!); // Non-null assertion okay here?
                       setCameraStarting(false);
                       
                       // Reset attempt counter after successful initialization
                       setTimeout(() => {
                         initAttemptRef.current = 0;
+                        console.log('CameraFeed: Init attempt counter reset after fallback success.');
                       }, 1000);
                     })
                     .catch(() => {
                       if (!mounted) return;
+                      console.error('CameraFeed: Error playing fallback video.');
                       setError('Failed to start video after retry.');
                       setCameraStarting(false);
                       
                       // Reset attempt counter to allow retrying
                       setTimeout(() => {
                         initAttemptRef.current = 0;
+                        console.log('CameraFeed: Init attempt counter reset after fallback play error.');
                       }, 1000);
                     });
                 };
               }
             } catch (retryErr) {
               if (!mounted) return;
+              console.error("CameraFeed: Error during fallback camera access:", retryErr);
               setError('Your camera does not support the required features. Please try a different camera.');
               setCameraStarting(false);
               
               // Reset attempt counter to allow retrying
               setTimeout(() => {
                 initAttemptRef.current = 0;
+                console.log('CameraFeed: Init attempt counter reset after fallback setup error.');
               }, 1000);
             }
         } else {
@@ -165,6 +203,7 @@ const CameraFeed: React.FC<CameraFeedProps> = ({ onVideoReady }) => {
           // Reset attempt counter to allow retrying
           setTimeout(() => {
             initAttemptRef.current = 0;
+             console.log('CameraFeed: Init attempt counter reset after general catch block.');
           }, 1000);
         }
       }
@@ -172,14 +211,17 @@ const CameraFeed: React.FC<CameraFeedProps> = ({ onVideoReady }) => {
 
     // Small delay before initializing camera to avoid flashing
     const initTimeout = setTimeout(() => {
+      console.log('CameraFeed: Initial timeout finished, calling enableCamera.');
       if (mounted) enableCamera();
     }, 500);
 
     // Handle visibility change to prevent camera restart when tab becomes active again
     const handleVisibilityChange = () => {
+      console.log(`CameraFeed: Visibility changed to ${document.visibilityState}. Stream exists: ${!!streamRef.current}. Camera starting: ${cameraStarting}`);
       if (document.visibilityState === 'visible' && !cameraStarting && !streamRef.current) {
         // Only restart if the stream is actually gone and we're not in starting state
-        setCameraStarting(true);
+        console.log('CameraFeed: Tab became visible and stream needs restart. Calling enableCamera.');
+        // setCameraStarting(true); // enableCamera now handles this
         enableCamera();
       }
     };
@@ -188,16 +230,21 @@ const CameraFeed: React.FC<CameraFeedProps> = ({ onVideoReady }) => {
 
     // Cleanup function to stop the stream when the component unmounts
     return () => {
+      console.log('CameraFeed: useEffect cleanup running.');
       mounted = false;
       clearTimeout(initTimeout);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       
       if (streamRef.current) {
+        console.log('CameraFeed: Stopping stream in cleanup.');
         streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
       }
       setCameraReady(false);
+      // setCameraStarting(true); // Reset starting state? Maybe not needed if unmounting.
     };
-  }, [setCameraReady, onVideoReady, cameraStarting]);
+  // }, [setCameraReady, onVideoReady, cameraStarting]); // Original
+  }, [setCameraReady, onVideoReady]); // Removed cameraStarting dependency
 
   return (
     <div className="relative w-full h-full bg-gray-800 overflow-hidden">
