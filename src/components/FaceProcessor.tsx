@@ -1,7 +1,6 @@
 import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { FaceMesh, Results as FaceMeshResults } from '@mediapipe/face_mesh';
 import { useAppStore } from '../store/useAppStore';
-import { FACEMESH_TESSELATION } from './faceLandmarks'; // Assuming we create this file/constant
 
 // Detect if device is mobile
 const isMobile = (): boolean => {
