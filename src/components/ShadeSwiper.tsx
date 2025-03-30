@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Swiper, SwiperSlide } from 'swiper/react';
 import { useAppStore } from '../store/useAppStore';
 
@@ -8,37 +8,83 @@ import 'swiper/css/navigation'; // If using navigation buttons
 import 'swiper/css/pagination'; // If using pagination
 
 // Optional: Import Swiper modules if needed
-// import { Navigation, Pagination } from 'swiper/modules';
+import { Navigation, FreeMode } from 'swiper/modules';
 
 const ShadeSwiper: React.FC = () => {
   const allShades = useAppStore((state) => state.allShades);
   const selectedShade = useAppStore((state) => state.selectedShade);
   const setSelectedShade = useAppStore((state) => state.setSelectedShade);
 
+  // Add custom styles for swiper navigation once on component mount
+  useEffect(() => {
+    const styleElement = document.createElement('style');
+    styleElement.textContent = `
+      .shade-swiper {
+        padding: 0 25px;
+      }
+      
+      .shade-swiper .swiper-button-next,
+      .shade-swiper .swiper-button-prev {
+        color: #e879f9;
+        width: 20px;
+        height: 20px;
+        background: rgba(30, 30, 40, 0.6);
+        border-radius: 50%;
+        backdrop-filter: blur(4px);
+      }
+      
+      .shade-swiper .swiper-button-next:after,
+      .shade-swiper .swiper-button-prev:after {
+        font-size: 10px;
+        font-weight: bold;
+      }
+      
+      .shade-swiper .swiper-button-disabled {
+        opacity: 0.35;
+        cursor: auto;
+        pointer-events: none;
+      }
+    `;
+    document.head.appendChild(styleElement);
+    
+    // Cleanup on unmount
+    return () => {
+      document.head.removeChild(styleElement);
+    };
+  }, []);
+
   return (
-    <div className="w-full py-2 px-4 bg-gray-100">
+    <div className="w-full">
       <Swiper
-        // modules={[Navigation, Pagination]} // Uncomment if using Navigation/Pagination
-        spaceBetween={10}       // Space between slides
-        slidesPerView={'auto'}  // Show partial next/prev slides
-        centeredSlides={true}   // Center the active slide
-        className="h-20"        // Set a fixed height for the swiper container
+        modules={[Navigation, FreeMode]}
+        spaceBetween={15}
+        slidesPerView={'auto'}
+        centeredSlides={false}
+        freeMode={true}
+        navigation={true}
+        className="shade-swiper relative"
       >
         {allShades.map((shade) => (
-          <SwiperSlide key={shade.id} className="!w-auto"> {/* Use !w-auto to let content size the slide */}            <div
+          <SwiperSlide key={shade.id} className="!w-auto">
+            <div
               onClick={() => setSelectedShade(shade)}
-              className={`w-12 h-12 rounded-full cursor-pointer border-2 hover:border-gray-600 transition-all duration-150 flex items-center justify-center
-                         ${selectedShade?.id === shade.id ? 'border-blue-500 scale-110' : 'border-transparent'}`}
-              style={{ backgroundColor: shade.colorHex }}
+              className={`w-14 h-14 rounded-full cursor-pointer transform transition-all duration-200 flex items-center justify-center shadow-md
+                         ${selectedShade?.id === shade.id 
+                            ? 'ring-2 ring-offset-2 ring-purple-500 scale-110' 
+                            : 'hover:scale-105'}`}
+              style={{ 
+                backgroundColor: shade.colorHex,
+                boxShadow: `0 4px 10px ${shade.colorHex}40` 
+              }}
               title={shade.name}
             >
-               {/* Optional: Add a checkmark or inner ring for selected */}
                {selectedShade?.id === shade.id && (
-                 <div className="w-4 h-4 rounded-full bg-white opacity-50"></div>
+                 <div className="w-3 h-3 rounded-full bg-white shadow-inner"></div>
                )}
             </div>
-            {/* Optional: Display shade name below swatch */}
-            {/* <p className="text-xs text-center mt-1">{shade.name}</p> */}
+            <p className="text-xs text-center mt-1.5 text-gray-300 truncate max-w-[70px]">
+              {shade.name.split(' ')[0]}
+            </p>
           </SwiperSlide>
         ))}
       </Swiper>

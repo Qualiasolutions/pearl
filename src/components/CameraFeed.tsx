@@ -10,86 +10,163 @@ const CameraFeed: React.FC<CameraFeedProps> = ({ onVideoReady }) => {
   const setCameraReady = useAppStore((state) => state.setCameraReady);
   const [error, setError] = useState<string | null>(null);
   const [cameraStarting, setCameraStarting] = useState(true);
+  const streamRef = useRef<MediaStream | null>(null);
 
   useEffect(() => {
+    let mounted = true;
     const enableCamera = async () => {
       try {
+        // Stop any existing stream first
+        if (streamRef.current) {
+          streamRef.current.getTracks().forEach(track => track.stop());
+        }
+
+        // Request camera access with specific constraints
         const stream = await navigator.mediaDevices.getUserMedia({ 
           video: { 
             width: { ideal: 1280 },
             height: { ideal: 720 },
-            facingMode: "user"
-          } 
+            facingMode: "user",
+            frameRate: { ideal: 30 }
+          },
+          audio: false
         });
+        
+        // Store stream reference for cleanup
+        streamRef.current = stream;
+        
+        // Only proceed if component is still mounted
+        if (!mounted) return;
         
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
+          
+          // Wait for metadata to load to ensure video dimensions are available
           videoRef.current.onloadedmetadata = () => {
-            if (videoRef.current) {
-              videoRef.current.play();
-              setCameraReady(true);
-              onVideoReady(videoRef.current); // Notify parent component
-              setError(null);
-              // Small delay to hide the loading indicator
-              setTimeout(() => setCameraStarting(false), 800);
+            if (!videoRef.current || !mounted) return;
+            
+            const playPromise = videoRef.current.play();
+            if (playPromise !== undefined) {
+              playPromise
+                .then(() => {
+                  if (!mounted) return;
+                  // Additional delay to ensure video is actually playing
+                  setTimeout(() => {
+                    if (!mounted) return;
+                    setCameraReady(true);
+                    onVideoReady(videoRef.current!);
+                    setCameraStarting(false);
+                  }, 500);
+                })
+                .catch(err => {
+                  console.error("Error playing video:", err);
+                  if (!mounted) return;
+                  setError('Could not play video stream. Please reload and try again.');
+                  setCameraStarting(false);
+                });
             }
+          };
+          
+          // Handle video errors
+          videoRef.current.onerror = () => {
+            if (!mounted) return;
+            setError('Video playback error. Please reload and try again.');
+            setCameraStarting(false);
+            setCameraReady(false);
           };
         }
       } catch (err) {
+        if (!mounted) return;
         console.error("Error accessing camera:", err);
         if (err instanceof DOMException && err.name === 'NotAllowedError') {
-            setError('Camera permission denied. Please allow camera access in your browser settings.');
+            setError('Camera access denied. Please allow camera access in your browser settings and reload the page.');
         } else if (err instanceof DOMException && err.name === 'NotFoundError') {
-            setError('No camera found. Please ensure a camera is connected and enabled.');
+            setError('No camera found. Please connect a camera and reload the page.');
+        } else if (err instanceof DOMException && err.name === 'NotReadableError') {
+            setError('Camera is in use by another application. Please close other applications using your camera.');
+        } else if (err instanceof DOMException && err.name === 'OverconstrainedError') {
+            // Try again with less constraints
+            try {
+              const basicStream = await navigator.mediaDevices.getUserMedia({ video: true });
+              if (!mounted) return;
+              streamRef.current = basicStream;
+              if (videoRef.current) {
+                videoRef.current.srcObject = basicStream;
+                videoRef.current.onloadedmetadata = () => {
+                  if (!videoRef.current || !mounted) return;
+                  videoRef.current.play()
+                    .then(() => {
+                      if (!mounted) return;
+                      setCameraReady(true);
+                      onVideoReady(videoRef.current!);
+                      setCameraStarting(false);
+                    })
+                    .catch(() => {
+                      if (!mounted) return;
+                      setError('Failed to start video after retry.');
+                      setCameraStarting(false);
+                    });
+                };
+              }
+            } catch (retryErr) {
+              if (!mounted) return;
+              setError('Your camera does not support the required features. Please try a different camera.');
+              setCameraStarting(false);
+            }
         } else {
-            setError('Could not access camera. Please check connections and permissions.');
+            setError('Camera access error. Please check your browser settings and reload.');
         }
-        setCameraReady(false);
-        setCameraStarting(false);
+        if (mounted) {
+          setCameraReady(false);
+          setCameraStarting(false);
+        }
       }
     };
 
-    enableCamera();
+    // Small delay before initializing camera to avoid flashing
+    const initTimeout = setTimeout(() => {
+      if (mounted) enableCamera();
+    }, 500);
 
     // Cleanup function to stop the stream when the component unmounts
     return () => {
-        if (videoRef.current && videoRef.current.srcObject) {
-            const stream = videoRef.current.srcObject as MediaStream;
-            stream.getTracks().forEach(track => track.stop());
-        }
-        setCameraReady(false); // Reset camera state on unmount
+      mounted = false;
+      clearTimeout(initTimeout);
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+      }
+      setCameraReady(false);
     };
   }, [setCameraReady, onVideoReady]);
 
   return (
-    <div className="relative w-full h-full bg-gray-900 overflow-hidden">
+    <div className="relative w-full h-full bg-gray-800 overflow-hidden">
       {/* Camera feed */}
       <video
         ref={videoRef}
         className="w-full h-full object-cover"
         muted
-        autoPlay
         playsInline
       ></video>
       
       {/* Face positioning guide overlay (only when camera is ready and no error) */}
       {!error && !cameraStarting && (
         <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-          <div className="w-64 h-64 border-2 border-white border-opacity-40 rounded-full"></div>
+          <div className="w-64 h-64 md:w-72 md:h-72 border-2 border-white border-opacity-40 rounded-full"></div>
         </div>
       )}
       
       {/* Error message */}
       {error && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-75 text-white p-4 text-center">
-          <div className="max-w-md p-4 bg-gray-800 rounded-lg shadow-lg">
-            <div className="text-red-400 text-xl mb-2">📷 Camera Error</div>
-            <p>{error}</p>
+        <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-80 backdrop-blur-sm text-white p-4 text-center z-10">
+          <div className="max-w-md p-6 bg-gray-800 rounded-xl shadow-2xl border border-red-500/20">
+            <div className="text-red-400 text-xl mb-3 font-medium">📷 Camera Error</div>
+            <p className="mb-4">{error}</p>
             <button 
               onClick={() => window.location.reload()}
-              className="mt-4 px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 transition-colors"
+              className="mt-2 px-6 py-2.5 bg-gradient-to-r from-purple-600 to-pink-600 text-white rounded-md hover:from-purple-700 hover:to-pink-700 transition-colors duration-300 shadow-lg"
             >
-              Try Again
+              Reload Page
             </button>
           </div>
         </div>
@@ -97,10 +174,11 @@ const CameraFeed: React.FC<CameraFeedProps> = ({ onVideoReady }) => {
       
       {/* Initial loading state */}
       {cameraStarting && !error && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-75 text-white">
+        <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-80 backdrop-blur-sm text-white z-10">
           <div className="text-center">
-            <div className="inline-block w-8 h-8 border-4 border-t-purple-500 border-r-purple-500 border-b-transparent border-l-transparent rounded-full animate-spin mb-2"></div>
-            <p>Starting camera...</p>
+            <div className="inline-block w-12 h-12 border-4 border-t-purple-500 border-r-pink-500 border-b-indigo-500 border-l-transparent rounded-full animate-spin mb-4"></div>
+            <p className="text-lg font-light">Initializing camera...</p>
+            <p className="text-xs mt-2 text-gray-400 max-w-xs mx-auto">This may take a moment. Please allow camera access when prompted.</p>
           </div>
         </div>
       )}
