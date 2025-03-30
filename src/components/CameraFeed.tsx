@@ -24,6 +24,7 @@ const CameraFeed: React.FC<CameraFeedProps> = ({ onVideoReady }) => {
   const streamRef = useRef<MediaStream | null>(null);
   const initAttemptRef = useRef(0); // Track initialization attempts
   const userInteractedRef = useRef(false); // Track if user has interacted with the page
+  const videoReadyRef = useRef(false); // Track if video is actually playing
 
   // Detect mobile and iOS once
   const deviceIsMobile = useRef(isMobile());
@@ -41,53 +42,56 @@ const CameraFeed: React.FC<CameraFeedProps> = ({ onVideoReady }) => {
     initAttemptRef.current += 1;
     setCameraStarting(true); // Ensure loading state is active
     setError(null); // Clear previous errors
+    videoReadyRef.current = false;
 
     try {
       console.log('CameraFeed: Stopping existing stream (if any)...');
       // Stop any existing stream first
       if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current.getTracks().forEach(track => {
+          track.stop();
+          console.log('Track stopped:', track.kind, track.label, track.readyState);
+        });
         streamRef.current = null;
         console.log('CameraFeed: Existing stream stopped.');
       }
 
       // Different constraints for mobile vs desktop
-      const constraints = deviceIsMobile.current 
-        ? { 
-            video: {
-              facingMode: "user",
-              width: { ideal: deviceIsIOS.current ? 640 : 720 },
-              height: { ideal: deviceIsIOS.current ? 480 : 1280 },
-            },
-            audio: false
-          }
-        : { 
-            video: { 
-              width: { ideal: 1280 },
-              height: { ideal: 720 },
-              facingMode: "user",
-              frameRate: { ideal: 30 }
-            },
-            audio: false
-          };
+      // More permissive constraints that work on most devices
+      const constraints = { 
+        video: {
+          facingMode: "user",
+          width: { ideal: deviceIsMobile.current ? 640 : 1280 },
+          height: { ideal: deviceIsMobile.current ? 480 : 720 }
+        },
+        audio: false
+      };
 
       console.log('CameraFeed: Requesting camera access with constraints:', constraints);
       // Request camera access with appropriate constraints
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       
-      console.log('CameraFeed: Camera access granted.');
+      console.log('CameraFeed: Camera access granted. Tracks:', stream.getVideoTracks().length);
+      
       // Store stream reference for cleanup
       streamRef.current = stream;
       
       if (videoRef.current) {
         console.log('CameraFeed: Assigning stream to video element.');
+        
+        // Cancel any previous srcObject first
+        if (videoRef.current.srcObject) {
+          videoRef.current.srcObject = null;
+        }
+        
+        // Apply stream to video element
         videoRef.current.srcObject = stream;
         
-        // Extra attributes for iOS
-        if (deviceIsIOS.current) {
-          videoRef.current.setAttribute('playsinline', 'true');
-          videoRef.current.setAttribute('webkit-playsinline', 'true');
-        }
+        // Extra attributes for iOS and mobile
+        videoRef.current.setAttribute('playsinline', 'true');
+        videoRef.current.setAttribute('webkit-playsinline', 'true');
+        videoRef.current.muted = true;
+        videoRef.current.autoplay = true;
         
         // Wait for metadata to load to ensure video dimensions are available
         videoRef.current.onloadedmetadata = () => {
@@ -96,6 +100,13 @@ const CameraFeed: React.FC<CameraFeedProps> = ({ onVideoReady }) => {
              return;
           }
           console.log('CameraFeed: Video metadata loaded. Attempting to play...');
+          
+          // Make sure we're not already processing a play attempt
+          if (videoReadyRef.current) {
+            console.log('CameraFeed: Video already playing, skipping play() call');
+            return;
+          }
+          
           const playPromise = videoRef.current.play();
           if (playPromise !== undefined) {
             playPromise
@@ -107,10 +118,23 @@ const CameraFeed: React.FC<CameraFeedProps> = ({ onVideoReady }) => {
                      console.log('CameraFeed: Post-play timeout skipped (no videoRef).');
                      return;
                   }
-                  console.log('CameraFeed: Setting camera ready.');
-                  setCameraReady(true);
-                  onVideoReady(videoRef.current);
-                  setCameraStarting(false);
+                  
+                  // Double-check that video is actually playing by checking its time
+                  if (!videoReadyRef.current && videoRef.current.currentTime === 0) {
+                    console.log('CameraFeed: Video not actually playing (currentTime is 0)');
+                    // Try playing again with user interaction if available
+                    if (userInteractedRef.current) {
+                      videoRef.current.play().catch(err => console.log('Replay attempt failed:', err));
+                    }
+                  }
+                  
+                  if (!videoReadyRef.current) {
+                    console.log('CameraFeed: Setting camera ready.');
+                    videoReadyRef.current = true;
+                    setCameraReady(true);
+                    onVideoReady(videoRef.current);
+                    setCameraStarting(false);
+                  }
                   
                   // Reset attempt counter after successful initialization
                   setTimeout(() => {
@@ -140,9 +164,23 @@ const CameraFeed: React.FC<CameraFeedProps> = ({ onVideoReady }) => {
           }
         };
         
+        // Add additional event listeners to monitor video state
+        videoRef.current.onplay = () => {
+          console.log('CameraFeed: Video onplay event fired');
+        };
+        
+        videoRef.current.onpause = () => {
+          console.log('CameraFeed: Video onpause event fired');
+          // Video paused unexpectedly - try to restart if we already had it playing
+          if (videoReadyRef.current) {
+            console.log('CameraFeed: Video paused unexpectedly, attempting to restart');
+            videoRef.current?.play().catch(err => console.log('Restart after pause failed:', err));
+          }
+        };
+        
         // Handle video errors
-        videoRef.current.onerror = () => {
-          console.error('CameraFeed: Video element error occurred.');
+        videoRef.current.onerror = (event) => {
+          console.error('CameraFeed: Video element error occurred:', event);
           setError('Video playback error. Please reload and try again.');
           setCameraStarting(false);
           setCameraReady(false);
@@ -169,7 +207,7 @@ const CameraFeed: React.FC<CameraFeedProps> = ({ onVideoReady }) => {
           try {
             // Minimal constraints as last resort
             const basicStream = await navigator.mediaDevices.getUserMedia({ 
-              video: deviceIsIOS.current ? { facingMode: "user" } : true 
+              video: true 
             });
             
             console.log('CameraFeed: Fallback camera access granted.');
@@ -178,10 +216,9 @@ const CameraFeed: React.FC<CameraFeedProps> = ({ onVideoReady }) => {
               videoRef.current.srcObject = basicStream;
               
               // Extra attributes for iOS
-              if (deviceIsIOS.current) {
-                videoRef.current.setAttribute('playsinline', 'true');
-                videoRef.current.setAttribute('webkit-playsinline', 'true');
-              }
+              videoRef.current.setAttribute('playsinline', 'true');
+              videoRef.current.setAttribute('webkit-playsinline', 'true');
+              videoRef.current.muted = true;
               
               videoRef.current.onloadedmetadata = () => {
                 if (!videoRef.current) return;
@@ -189,6 +226,7 @@ const CameraFeed: React.FC<CameraFeedProps> = ({ onVideoReady }) => {
                 videoRef.current.play()
                   .then(() => {
                     console.log('CameraFeed: Fallback play() resolved successfully.');
+                    videoReadyRef.current = true;
                     setCameraReady(true);
                     onVideoReady(videoRef.current!);
                     setCameraStarting(false);
@@ -247,11 +285,26 @@ const CameraFeed: React.FC<CameraFeedProps> = ({ onVideoReady }) => {
   // Handle autoplay policy
   useEffect(() => {
     const handleUserInteraction = () => {
+      console.log('User interaction detected');
       userInteractedRef.current = true;
       
       // If camera isn't starting and no stream exists, try to start it on interaction
       if (!cameraStarting && !streamRef.current) {
         enableCamera();
+      } else if (videoRef.current && !videoReadyRef.current) {
+        // If we have video element but it's not playing, try to play it
+        console.log("Attempting to play video after user interaction");
+        videoRef.current.play()
+          .then(() => {
+            console.log("Play after interaction successful");
+            if (!videoReadyRef.current && videoRef.current) {
+              videoReadyRef.current = true;
+              setCameraReady(true);
+              onVideoReady(videoRef.current);
+              setCameraStarting(false);
+            }
+          })
+          .catch(err => console.error("Play after interaction failed:", err));
       }
     };
 
@@ -266,16 +319,31 @@ const CameraFeed: React.FC<CameraFeedProps> = ({ onVideoReady }) => {
         document.removeEventListener(event, handleUserInteraction);
       });
     };
-  }, [cameraStarting]);
+  }, [cameraStarting, onVideoReady, setCameraReady]);
 
+  // Main camera initialization effect
   useEffect(() => {
-    let mounted = true;
     console.log('CameraFeed: useEffect mounting/running.');
+    
+    // Add health check interval to make sure camera stays active
+    const healthCheckInterval = setInterval(() => {
+      // If we're supposed to be ready but the video isn't playing, something went wrong
+      if (videoReadyRef.current && videoRef.current) {
+        const isPlaying = videoRef.current.currentTime > 0 && 
+                          !videoRef.current.paused && 
+                          !videoRef.current.ended;
+                          
+        if (!isPlaying) {
+          console.log("Health check detected stopped video - attempting to restart");
+          videoRef.current.play().catch(err => console.log("Health check play failed:", err));
+        }
+      }
+    }, 3000);
 
     // Small delay before initializing camera to avoid flashing
     const initTimeout = setTimeout(() => {
       console.log('CameraFeed: Initial timeout finished, calling enableCamera.');
-      if (mounted) enableCamera();
+      enableCamera();
     }, 500);
 
     // Handle visibility change to prevent camera restart when tab becomes active again
@@ -293,8 +361,8 @@ const CameraFeed: React.FC<CameraFeedProps> = ({ onVideoReady }) => {
     // Cleanup function to stop the stream when the component unmounts
     return () => {
       console.log('CameraFeed: useEffect cleanup running.');
-      mounted = false;
       clearTimeout(initTimeout);
+      clearInterval(healthCheckInterval);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       
       if (streamRef.current) {
