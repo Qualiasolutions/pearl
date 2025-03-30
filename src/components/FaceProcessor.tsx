@@ -77,7 +77,12 @@ const FaceProcessor: React.FC<FaceProcessorProps> = ({ videoElement, onCanvasRea
 
     // Clear canvas and draw video frame
     canvasCtx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-    canvasCtx.drawImage(videoElement, 0, 0, canvasRef.current.width, canvasRef.current.height);
+    
+    // Apply the same mirroring as the video element
+    canvasCtx.save();
+    canvasCtx.scale(-1, 1);
+    canvasCtx.drawImage(videoElement, -canvasRef.current.width, 0, canvasRef.current.width, canvasRef.current.height);
+    canvasCtx.restore();
 
     if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
         setFaceDetected(true);
@@ -87,6 +92,11 @@ const FaceProcessor: React.FC<FaceProcessorProps> = ({ videoElement, onCanvasRea
             // --- Draw Foundation --- 
             canvasCtx.globalCompositeOperation = 'multiply'; // Or 'overlay', 'soft-light'
             canvasCtx.fillStyle = hexToRgba(selectedShade.colorHex, 0.4); // Adjust alpha for desired intensity
+
+            // Apply mirroring for the face drawing
+            canvasCtx.save();
+            canvasCtx.scale(-1, 1);
+            canvasCtx.translate(-canvasRef.current.width, 0);
 
             // Iterate through the tesselation indices to draw triangles covering the face
             // FACEMESH_TESSELATION defines pairs of landmark indices forming lines of the mesh
@@ -127,9 +137,10 @@ const FaceProcessor: React.FC<FaceProcessorProps> = ({ videoElement, onCanvasRea
                 canvasCtx.closePath();
                 canvasCtx.fill();
             }
-            // ---------------------------------
-
-
+            
+            // Restore canvas state
+            canvasCtx.restore();
+            
             canvasCtx.globalCompositeOperation = 'source-over'; // Reset composite operation
         } else {
             // Optionally: Draw landmarks if no shade is selected (for debugging)

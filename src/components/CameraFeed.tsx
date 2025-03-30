@@ -11,14 +11,25 @@ const CameraFeed: React.FC<CameraFeedProps> = ({ onVideoReady }) => {
   const [error, setError] = useState<string | null>(null);
   const [cameraStarting, setCameraStarting] = useState(true);
   const streamRef = useRef<MediaStream | null>(null);
+  const initAttemptRef = useRef(0); // Track initialization attempts
 
   useEffect(() => {
     let mounted = true;
+    
+    // Camera initialization function
     const enableCamera = async () => {
+      // Prevent multiple initialization attempts in quick succession
+      if (initAttemptRef.current > 0) {
+        return;
+      }
+      
+      initAttemptRef.current += 1;
+      
       try {
         // Stop any existing stream first
         if (streamRef.current) {
           streamRef.current.getTracks().forEach(track => track.stop());
+          streamRef.current = null;
         }
 
         // Request camera access with specific constraints
@@ -52,10 +63,15 @@ const CameraFeed: React.FC<CameraFeedProps> = ({ onVideoReady }) => {
                   if (!mounted) return;
                   // Additional delay to ensure video is actually playing
                   setTimeout(() => {
-                    if (!mounted) return;
+                    if (!mounted || !videoRef.current) return;
                     setCameraReady(true);
-                    onVideoReady(videoRef.current!);
+                    onVideoReady(videoRef.current);
                     setCameraStarting(false);
+                    
+                    // Reset attempt counter after successful initialization
+                    setTimeout(() => {
+                      initAttemptRef.current = 0;
+                    }, 1000);
                   }, 500);
                 })
                 .catch(err => {
@@ -63,6 +79,11 @@ const CameraFeed: React.FC<CameraFeedProps> = ({ onVideoReady }) => {
                   if (!mounted) return;
                   setError('Could not play video stream. Please reload and try again.');
                   setCameraStarting(false);
+                  
+                  // Reset attempt counter to allow retrying
+                  setTimeout(() => {
+                    initAttemptRef.current = 0;
+                  }, 1000);
                 });
             }
           };
@@ -73,11 +94,17 @@ const CameraFeed: React.FC<CameraFeedProps> = ({ onVideoReady }) => {
             setError('Video playback error. Please reload and try again.');
             setCameraStarting(false);
             setCameraReady(false);
+            
+            // Reset attempt counter to allow retrying
+            setTimeout(() => {
+              initAttemptRef.current = 0;
+            }, 1000);
           };
         }
       } catch (err) {
         if (!mounted) return;
         console.error("Error accessing camera:", err);
+        
         if (err instanceof DOMException && err.name === 'NotAllowedError') {
             setError('Camera access denied. Please allow camera access in your browser settings and reload the page.');
         } else if (err instanceof DOMException && err.name === 'NotFoundError') {
@@ -100,11 +127,21 @@ const CameraFeed: React.FC<CameraFeedProps> = ({ onVideoReady }) => {
                       setCameraReady(true);
                       onVideoReady(videoRef.current!);
                       setCameraStarting(false);
+                      
+                      // Reset attempt counter after successful initialization
+                      setTimeout(() => {
+                        initAttemptRef.current = 0;
+                      }, 1000);
                     })
                     .catch(() => {
                       if (!mounted) return;
                       setError('Failed to start video after retry.');
                       setCameraStarting(false);
+                      
+                      // Reset attempt counter to allow retrying
+                      setTimeout(() => {
+                        initAttemptRef.current = 0;
+                      }, 1000);
                     });
                 };
               }
@@ -112,6 +149,11 @@ const CameraFeed: React.FC<CameraFeedProps> = ({ onVideoReady }) => {
               if (!mounted) return;
               setError('Your camera does not support the required features. Please try a different camera.');
               setCameraStarting(false);
+              
+              // Reset attempt counter to allow retrying
+              setTimeout(() => {
+                initAttemptRef.current = 0;
+              }, 1000);
             }
         } else {
             setError('Camera access error. Please check your browser settings and reload.');
@@ -119,6 +161,11 @@ const CameraFeed: React.FC<CameraFeedProps> = ({ onVideoReady }) => {
         if (mounted) {
           setCameraReady(false);
           setCameraStarting(false);
+          
+          // Reset attempt counter to allow retrying
+          setTimeout(() => {
+            initAttemptRef.current = 0;
+          }, 1000);
         }
       }
     };
@@ -128,25 +175,39 @@ const CameraFeed: React.FC<CameraFeedProps> = ({ onVideoReady }) => {
       if (mounted) enableCamera();
     }, 500);
 
+    // Handle visibility change to prevent camera restart when tab becomes active again
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && !cameraStarting && !streamRef.current) {
+        // Only restart if the stream is actually gone and we're not in starting state
+        setCameraStarting(true);
+        enableCamera();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
     // Cleanup function to stop the stream when the component unmounts
     return () => {
       mounted = false;
       clearTimeout(initTimeout);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      
       if (streamRef.current) {
         streamRef.current.getTracks().forEach(track => track.stop());
       }
       setCameraReady(false);
     };
-  }, [setCameraReady, onVideoReady]);
+  }, [setCameraReady, onVideoReady, cameraStarting]);
 
   return (
     <div className="relative w-full h-full bg-gray-800 overflow-hidden">
-      {/* Camera feed */}
+      {/* Camera feed - added scaleX(-1) to fix orientation */}
       <video
         ref={videoRef}
-        className="w-full h-full object-cover"
+        className="w-full h-full object-cover transform scale-x-[-1]" 
         muted
         playsInline
+        autoPlay
       ></video>
       
       {/* Face positioning guide overlay (only when camera is ready and no error) */}
